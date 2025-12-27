@@ -32,10 +32,6 @@ from whisper.model import (
     TextDecoder,
 )
 
-torch.set_num_threads(1)
-torch.set_num_interop_threads(1)
-
-
 def get_args():
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -316,6 +312,12 @@ def convert_tokens(name, model):
 
 @torch.no_grad()
 def main():
+    torch.set_num_threads(1)
+    torch.set_num_interop_threads(1)
+
+    # Disable SDPA for ONNX export compatibility (avoids tracing issues)
+    MultiHeadAttention.use_sdpa = False
+
     args = get_args()
     name = args.model
     print(args)
