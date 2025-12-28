@@ -310,6 +310,106 @@ def convert_tokens(name, model):
             f.write(f"{t} {i}\n")
 
 
+def load_model(name: str):
+    """Load a Whisper model by name.
+
+    For standard OpenAI models (tiny, base, small, medium, large, etc.),
+    this uses whisper.load_model() directly.
+
+    For distil-whisper and fine-tuned models, this expects the checkpoint
+    file to be pre-downloaded to the current directory with a specific name.
+
+    Args:
+        name: Model name (e.g., "tiny", "distil-small.en", "medium-aishell")
+
+    Returns:
+        The loaded whisper model.
+
+    Raises:
+        ValueError: If a required checkpoint file is not found.
+    """
+    if name == "distil-medium.en":
+        filename = "./distil-medium-en-original-model.bin"
+        if not Path(filename).is_file():
+            raise ValueError(
+                """
+                Please go to https://huggingface.co/distil-whisper/distil-medium.en
+                to download original-model.bin
+                You can use the following command to do that:
+
+                wget -O distil-medium-en-original-model.bin https://huggingface.co/distil-whisper/distil-medium.en/resolve/main/original-model.bin
+            """
+            )
+        return whisper.load_model(filename)
+    elif name == "distil-large-v2":
+        filename = "./distil-large-v2-original-model.bin"
+        if not Path(filename).is_file():
+            raise ValueError(
+                """
+                Please go to https://huggingface.co/distil-whisper/distil-large-v2
+                to download original-model.bin
+                You can use the following command to do that:
+
+                wget -O distil-large-v2-original-model.bin https://huggingface.co/distil-whisper/distil-large-v2/resolve/main/original-model.bin
+            """
+            )
+        return whisper.load_model(filename)
+    elif name == "distil-large-v3":
+        filename = "./distil-large-v3-original-model.bin"
+        if not Path(filename).is_file():
+            raise ValueError(
+                """
+                Please go to https://huggingface.co/distil-whisper/distil-large-v3-openai
+                to download model.bin
+                You can use the following command to do that:
+
+                wget -O distil-large-v3-original-model.bin https://huggingface.co/distil-whisper/distil-large-v3-openai/resolve/main/model.bin
+            """
+            )
+        return whisper.load_model(filename)
+    elif name == "distil-large-v3.5":
+        filename = "./distil-large-v3.5-original-model.bin"
+        if not Path(filename).is_file():
+            raise ValueError(
+                """
+                Please go to https://huggingface.co/distil-whisper/distil-large-v3.5-openai/
+                to download model.bin
+                You can use the following command to do that:
+
+                wget -O distil-large-v3.5-original-model.bin https://huggingface.co/distil-whisper/distil-large-v3.5-openai/resolve/main/model.bin
+            """
+            )
+        return whisper.load_model(filename)
+    elif name == "distil-small.en":
+        filename = "./distil-small-en-original-model.bin"
+        if not Path(filename).is_file():
+            raise ValueError(
+                """
+                Please go to https://huggingface.co/distil-whisper/distil-small.en
+                to download original-model.bin
+                You can use the following command to do that:
+
+                wget -O distil-small-en-original-model.bin https://huggingface.co/distil-whisper/distil-small.en/resolve/main/original-model.bin
+            """
+            )
+        return whisper.load_model(filename)
+    elif name == "medium-aishell":
+        filename = "./medium-aishell.pt"
+        if not Path(filename).is_file():
+            raise ValueError(
+                """
+                Please go to https://huggingface.co/yuekai/icefall_asr_aishell_whisper/tree/main/exp_medium
+                to download whisper-medium-aishell1-epoch-10-avg-4.pt
+                You can use the following command to do that:
+
+                wget -O medium-aishell.pt https://huggingface.co/yuekai/icefall_asr_aishell_whisper/resolve/main/exp_medium/whisper-medium-aishell1-epoch-10-avg-4.pt
+            """
+            )
+        return whisper.load_model(filename)
+    else:
+        return whisper.load_model(name)
+
+
 @torch.no_grad()
 def main():
     torch.set_num_threads(1)
@@ -325,86 +425,7 @@ def main():
 
     opset_version = 13
 
-    if name == "distil-medium.en":
-        filename = "./distil-medium-en-original-model.bin"
-        if not Path(filename).is_file():
-            raise ValueError(
-                """
-                Please go to https://huggingface.co/distil-whisper/distil-medium.en
-                to download original-model.bin
-                You can use the following command to do that:
-
-                wget -O distil-medium-en-original-model.bin https://huggingface.co/distil-whisper/distil-medium.en/resolve/main/original-model.bin
-            """
-            )
-        model = whisper.load_model(filename)
-    elif name == "distil-large-v2":
-        filename = "./distil-large-v2-original-model.bin"
-        if not Path(filename).is_file():
-            raise ValueError(
-                """
-                Please go to https://huggingface.co/distil-whisper/distil-large-v2
-                to download original-model.bin
-                You can use the following command to do that:
-
-                wget -O distil-large-v2-original-model.bin https://huggingface.co/distil-whisper/distil-large-v2/resolve/main/original-model.bin
-            """
-            )
-        model = whisper.load_model(filename)
-    elif name == "distil-large-v3":
-        filename = "./distil-large-v3-original-model.bin"
-        if not Path(filename).is_file():
-            raise ValueError(
-                """
-                Please go to https://huggingface.co/distil-whisper/distil-large-v3-openai
-                to download model.bin
-                You can use the following command to do that:
-
-                wget -O distil-large-v3-original-model.bin https://huggingface.co/distil-whisper/distil-large-v3-openai/resolve/main/model.bin
-            """
-            )
-        model = whisper.load_model(filename)
-    elif name == "distil-large-v3.5":
-        filename = "./distil-large-v3.5-original-model.bin"
-        if not Path(filename).is_file():
-            raise ValueError(
-                """
-                Please go to https://huggingface.co/distil-whisper/distil-large-v3.5-openai/
-                to download model.bin
-                You can use the following command to do that:
-
-                wget -O distil-large-v3.5-original-model.bin https://huggingface.co/distil-whisper/distil-large-v3.5-openai/resolve/main/model.bin
-            """
-            )
-        model = whisper.load_model(filename)
-    elif name == "distil-small.en":
-        filename = "./distil-small-en-original-model.bin"
-        if not Path(filename).is_file():
-            raise ValueError(
-                """
-                Please go to https://huggingface.co/distil-whisper/distil-small.en
-                to download original-model.bin
-                You can use the following command to do that:
-
-                wget -O distil-small-en-original-model.bin https://huggingface.co/distil-whisper/distil-small.en/resolve/main/original-model.bin
-            """
-            )
-        model = whisper.load_model(filename)
-    elif name == "medium-aishell":
-        filename = "./medium-aishell.pt"
-        if not Path(filename).is_file():
-            raise ValueError(
-                """
-                Please go to https://huggingface.co/yuekai/icefall_asr_aishell_whisper/tree/main/exp_medium
-                to download whisper-medium-aishell1-epoch-10-avg-4.pt
-                You can use the following command to do that:
-
-                wget -O medium-aishell.pt https://huggingface.co/yuekai/icefall_asr_aishell_whisper/resolve/main/exp_medium/whisper-medium-aishell1-epoch-10-avg-4.pt
-            """
-            )
-        model = whisper.load_model(filename)
-    else:
-        model = whisper.load_model(name)
+    model = load_model(name)
     print(model.dims)
 
     print(
