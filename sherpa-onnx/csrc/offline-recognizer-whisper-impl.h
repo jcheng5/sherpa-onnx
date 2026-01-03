@@ -235,11 +235,13 @@ class OfflineRecognizerWhisperImpl : public OfflineRecognizerImpl {
     //   durations[i] = end_times[i] - start_times[i]
     // Pass timestamp_token_indices to filter out timestamp tokens from DTW
     // (needed when enable_segment_timestamps=true to avoid alignment issues)
+    // If dynamic_head_selection is enabled in the model, L2 norm scoring is
+    // used to select best heads per utterance (per arxiv 2509.09987)
     TokenTimingResult timing = dtw.ComputeTokenTimings(
         src.attention_weights.data(), src.attention_n_heads,
         src.attention_n_tokens, src.attention_n_frames, src.num_audio_frames,
         sot_sequence_length, static_cast<int32_t>(r.tokens.size()),
-        src.timestamp_token_indices);
+        src.timestamp_token_indices, model_->IsDynamicHeadSelection());
 
     // Populate timestamps and durations
     r.timestamps = std::move(timing.start_times);

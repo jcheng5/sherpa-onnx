@@ -27,6 +27,8 @@ struct TokenTimingResult {
 // for token-level timestamps in Whisper.
 //
 // Based on OpenAI Whisper (whisper/timing.py) and whisper.cpp implementations.
+// Dynamic head selection follows arxiv 2509.09987 "Whisper Has an Internal
+// Word Aligner".
 class WhisperDTW {
  public:
   // Compute token timings (start times and durations) from raw cross-attention.
@@ -47,15 +49,31 @@ class WhisperDTW {
   //                        (excluding SOT sequence and EOT)
   // @param timestamp_token_indices Indices of timestamp tokens to filter out
   //                                (0-based, relative to attention sequence)
+  // @param dynamic_head_selection If true, use L2 norm scoring to select
+  //                               best heads per utterance (arxiv 2509.09987)
   //
   // @return TokenTimingResult with start_times and durations for each token
   TokenTimingResult ComputeTokenTimings(
       const float *attention, int32_t n_heads, int32_t n_tokens,
       int32_t n_frames, int32_t num_audio_frames, int32_t sot_sequence_length,
       int32_t num_text_tokens,
-      const std::vector<int32_t> &timestamp_token_indices = {});
+      const std::vector<int32_t> &timestamp_token_indices = {},
+      bool dynamic_head_selection = false);
 
  private:
+  // Compute L2 norm score for a single head's attention matrix
+  // Higher scores indicate better alignment quality (per arxiv 2509.09987)
+  // Score = sum(row_norms) + sum(col_norms)
+  float ComputeL2Score(const float *attention, int32_t n_tokens,
+                       int32_t n_frames);
+
+  // Select best heads using L2 norm scoring
+  // Selects top k = min(n_heads / 2, max_heads) heads
+  // Returns indices of selected heads sorted by score (descending)
+  std::vector<int32_t> SelectHeadsByL2(const float *attention, int32_t n_heads,
+                                       int32_t n_tokens, int32_t n_frames,
+                                       int32_t max_heads = 20);
+
   // Apply softmax normalization across the last dimension (frames)
   void ApplySoftmax(float *data, int32_t n_tokens, int32_t n_frames);
 

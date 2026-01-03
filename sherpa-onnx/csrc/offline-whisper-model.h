@@ -113,6 +113,10 @@ class OfflineWhisperModel {
   // Get number of alignment heads (0 if no attention output)
   int32_t NumAlignmentHeads() const;
 
+  // Check if dynamic head selection is enabled (per arxiv 2509.09987)
+  // When true, runtime selects best heads using L2 norm scoring
+  bool IsDynamicHeadSelection() const;
+
   static void NormalizeFeatures(float *features, int32_t num_frames,
                                 int32_t feat_dim);
 

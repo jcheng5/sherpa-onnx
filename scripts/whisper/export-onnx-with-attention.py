@@ -104,6 +104,17 @@ def get_args():
         choices=list(ALIGNMENT_HEADS.keys()),
         help="Whisper model name (must have known alignment heads)",
     )
+    parser.add_argument(
+        "--dynamic-heads",
+        action="store_true",
+        help="Export all heads for dynamic runtime selection (per arxiv 2509.09987)",
+    )
+    parser.add_argument(
+        "--output-dir",
+        type=str,
+        default=".",
+        help="Output directory for exported models",
+    )
     return parser.parse_args()
 
 
@@ -162,7 +173,59 @@ def get_alignment_heads(name: str, model) -> List[Tuple[int, int]]:
         return heads
 
 
-def convert_tokens(name: str, model):
+def get_layers_to_export(model, dynamic_heads: bool) -> List[int]:
+    """Determine which layers to export attention from.
+
+    For dynamic head selection mode:
+    - Models with ≤6 layers: export all layers
+    - Models with >6 layers: export top half of layers only
+
+    This is a memory optimization for larger models where alignment
+    information tends to be in later layers.
+
+    Args:
+        model: Loaded whisper model
+        dynamic_heads: Whether dynamic head selection is enabled
+
+    Returns:
+        List of layer indices to export attention from.
+    """
+    n_layers = len(model.decoder.blocks)
+
+    if not dynamic_heads:
+        # For fixed heads mode, all layers with alignment heads are exported
+        return list(range(n_layers))
+
+    # For dynamic heads mode, apply layer filtering for large models
+    if n_layers <= 6:
+        # Small models: export all layers
+        return list(range(n_layers))
+    else:
+        # Large models: export top half of layers only
+        # This captures layers where alignment heads tend to be
+        start_layer = n_layers // 2
+        return list(range(start_layer, n_layers))
+
+
+def get_heads_for_dynamic_selection(model, layers_to_export: List[int]) -> List[Tuple[int, int]]:
+    """Generate list of all (layer, head) pairs for dynamic selection.
+
+    Args:
+        model: Loaded whisper model
+        layers_to_export: List of layer indices to export
+
+    Returns:
+        List of (layer, head) tuples for all heads in specified layers.
+    """
+    n_heads = model.dims.n_text_head
+    heads = []
+    for layer_idx in layers_to_export:
+        for head_idx in range(n_heads):
+            heads.append((layer_idx, head_idx))
+    return heads
+
+
+def convert_tokens(name: str, model, output_dir: str = "."):
     """Convert and save tokens file."""
     whisper_dir = Path(whisper.__file__).parent
     multilingual = model.is_multilingual
@@ -181,7 +244,7 @@ def convert_tokens(name: str, model):
             for token, rank in (line.split() for line in contents.splitlines() if line)
         }
 
-    output_path = f"{name}-tokens.txt"
+    output_path = os.path.join(output_dir, f"{name}-tokens.txt")
     with open(output_path, "w") as f:
         for t, i in tokens.items():
             f.write(f"{t} {i}\n")
@@ -437,8 +500,14 @@ def main():
 
     args = get_args()
     name = args.model
+    output_dir = args.output_dir
 
-    print(f"Exporting {name} with cross-attention weights")
+    # Create output directory if needed
+    if output_dir != ".":
+        os.makedirs(output_dir, exist_ok=True)
+
+    mode = "dynamic heads" if args.dynamic_heads else "fixed alignment heads"
+    print(f"Exporting {name} with cross-attention weights ({mode})")
 
     opset_version = 13
 
@@ -447,11 +516,16 @@ def main():
     print(f"Model dimensions: {model.dims}")
     print(f"Total parameters: {sum(p.numel() for p in model.parameters()):,}")
 
-    # Get alignment heads for this model
-    alignment_heads = get_alignment_heads(name, model)
-    print(f"Using {len(alignment_heads)} alignment heads: {alignment_heads}")
+    # Determine which heads to export
+    if args.dynamic_heads:
+        layers_to_export = get_layers_to_export(model, dynamic_heads=True)
+        alignment_heads = get_heads_for_dynamic_selection(model, layers_to_export)
+        print(f"Dynamic mode: exporting {len(alignment_heads)} heads from layers {layers_to_export}")
+    else:
+        alignment_heads = get_alignment_heads(name, model)
+        print(f"Fixed mode: using {len(alignment_heads)} alignment heads: {alignment_heads}")
 
-    convert_tokens(name=name, model=model)
+    convert_tokens(name=name, model=model, output_dir=output_dir)
 
     tokenizer = whisper.tokenizer.get_tokenizer(
         model.is_multilingual, num_languages=model.num_languages
@@ -477,7 +551,7 @@ def main():
     encoder = AudioEncoderTensorCache(model.encoder, model.decoder)
     n_layer_cross_k, n_layer_cross_v = encoder(mel)
 
-    encoder_filename = f"{name}-encoder.onnx"
+    encoder_filename = os.path.join(output_dir, f"{name}-encoder.onnx")
     torch.onnx.export(
         encoder,
         mel,
@@ -494,7 +568,7 @@ def main():
 
     encoder_meta_data = {
         "model_type": f"whisper-{name}",
-        "version": "2",  # Version 2 indicates attention-enabled
+        "version": "3" if args.dynamic_heads else "2",  # Version 3 = dynamic heads
         "maintainer": "k2-fsa",
         "n_mels": model.dims.n_mels,
         "n_audio_ctx": model.dims.n_audio_ctx,
@@ -524,6 +598,8 @@ def main():
         # Attention-specific metadata
         "n_alignment_heads": len(alignment_heads),
         "alignment_heads": ",".join([f"{l}:{h}" for l, h in alignment_heads]),
+        # Dynamic head selection flag
+        "dynamic_head_selection": int(args.dynamic_heads),
     }
     print(f"Encoder metadata: {encoder_meta_data}")
     add_meta_data(filename=encoder_filename, meta_data=encoder_meta_data)
@@ -578,7 +654,7 @@ def main():
     offset = torch.tensor([tokens.shape[1]], dtype=torch.int64).to(mel.device)
     tokens_single = torch.tensor([[tokenizer.sot]] * n_audio).to(mel.device)
 
-    decoder_filename = f"{name}-decoder.onnx"
+    decoder_filename = os.path.join(output_dir, f"{name}-decoder.onnx")
     torch.onnx.export(
         decoder,
         (
@@ -629,7 +705,7 @@ def main():
     # Generate int8 quantized models
     print("Generating int8 quantized models...")
 
-    encoder_filename_int8 = f"{name}-encoder.int8.onnx"
+    encoder_filename_int8 = os.path.join(output_dir, f"{name}-encoder.int8.onnx")
     quantize_dynamic(
         model_input=encoder_filename,
         model_output=encoder_filename_int8,
@@ -637,7 +713,7 @@ def main():
         weight_type=QuantType.QInt8,
     )
 
-    decoder_filename_int8 = f"{name}-decoder.int8.onnx"
+    decoder_filename_int8 = os.path.join(output_dir, f"{name}-decoder.int8.onnx")
     quantize_dynamic(
         model_input=decoder_filename,
         model_output=decoder_filename_int8,
@@ -645,13 +721,18 @@ def main():
         weight_type=QuantType.QInt8,
     )
 
+    tokens_filename = os.path.join(output_dir, f"{name}-tokens.txt")
+
     print(f"\nExported files:")
     print(f"  - {encoder_filename}")
     print(f"  - {encoder_filename_int8}")
     print(f"  - {decoder_filename}")
     print(f"  - {decoder_filename_int8}")
-    print(f"  - {name}-tokens.txt")
+    print(f"  - {tokens_filename}")
     print(f"\nDecoder has 4 outputs including cross_attention_weights")
+    if args.dynamic_heads:
+        print(f"Dynamic head selection enabled: {len(alignment_heads)} heads exported")
+        print("Runtime will use L2 norm scoring to select best heads per utterance")
 
 
 if __name__ == "__main__":

@@ -16,11 +16,85 @@
 
 namespace sherpa_onnx {
 
+// Constants for dynamic head selection (per arxiv 2509.09987)
+constexpr int32_t kMaxHeadsToSelect = 20;  // Maximum heads to select
+
+float WhisperDTW::ComputeL2Score(const float *attention, int32_t n_tokens,
+                                  int32_t n_frames) {
+  if (n_tokens < 2 || n_frames < 2) {
+    return 0.0f;
+  }
+
+  // Compute row norms (one per token)
+  float row_sum = 0.0f;
+  for (int32_t t = 0; t < n_tokens; ++t) {
+    float norm = 0.0f;
+    for (int32_t f = 0; f < n_frames; ++f) {
+      float v = attention[t * n_frames + f];
+      norm += v * v;
+    }
+    row_sum += std::sqrt(norm);
+  }
+
+  // Compute column norms (one per frame)
+  float col_sum = 0.0f;
+  for (int32_t f = 0; f < n_frames; ++f) {
+    float norm = 0.0f;
+    for (int32_t t = 0; t < n_tokens; ++t) {
+      float v = attention[t * n_frames + f];
+      norm += v * v;
+    }
+    col_sum += std::sqrt(norm);
+  }
+
+  return row_sum + col_sum;
+}
+
+std::vector<int32_t> WhisperDTW::SelectHeadsByL2(
+    const float *attention, int32_t n_heads, int32_t n_tokens, int32_t n_frames,
+    int32_t max_heads) {
+  // Score each head
+  std::vector<std::pair<float, int32_t>> scores;
+  scores.reserve(n_heads);
+
+  for (int32_t h = 0; h < n_heads; ++h) {
+    const float *head_attn = attention + h * n_tokens * n_frames;
+    float l2_score = ComputeL2Score(head_attn, n_tokens, n_frames);
+    scores.push_back({l2_score, h});
+  }
+
+  // Sort by score (descending)
+  std::sort(scores.begin(), scores.end(),
+            [](const auto &a, const auto &b) { return a.first > b.first; });
+
+  // Select top k = min(n_heads / 2, max_heads)
+  int32_t k = std::min(n_heads / 2, max_heads);
+  if (k < 1) k = 1;  // Always select at least one head
+
+#if DTW_DEBUG
+  fprintf(stderr, "L2 scores for %d heads (selecting top %d):\n", n_heads, k);
+  for (int32_t i = 0; i < std::min(n_heads, 10); ++i) {
+    fprintf(stderr, "  Head %d: %.2f%s\n", scores[i].second, scores[i].first,
+            i < k ? " *" : "");
+  }
+#endif
+
+  std::vector<int32_t> selected;
+  selected.reserve(k);
+
+  for (int32_t i = 0; i < k; ++i) {
+    selected.push_back(scores[i].second);
+  }
+
+  return selected;
+}
+
 TokenTimingResult WhisperDTW::ComputeTokenTimings(
     const float *attention, int32_t n_heads, int32_t n_tokens, int32_t n_frames,
     int32_t num_audio_frames, int32_t sot_sequence_length,
     int32_t num_text_tokens,
-    const std::vector<int32_t> &timestamp_token_indices) {
+    const std::vector<int32_t> &timestamp_token_indices,
+    bool dynamic_head_selection) {
   TokenTimingResult result;
 
   if (n_heads <= 0 || n_tokens <= 0 || n_frames <= 0 || num_text_tokens <= 0) {
@@ -35,6 +109,8 @@ TokenTimingResult WhisperDTW::ComputeTokenTimings(
           num_audio_frames, sot_sequence_length, num_text_tokens);
   fprintf(stderr, "timestamp_token_indices count: %zu\n",
           timestamp_token_indices.size());
+  fprintf(stderr, "dynamic_head_selection: %s\n",
+          dynamic_head_selection ? "true" : "false");
 #endif
 
   // Clip to actual audio frames (like OpenAI: weights[:, :, :num_frames//2])
@@ -43,11 +119,26 @@ TokenTimingResult WhisperDTW::ComputeTokenTimings(
     clipped_frames = n_frames;
   }
 
+  // Select which heads to use
+  std::vector<int32_t> heads_to_use;
+  if (dynamic_head_selection) {
+    heads_to_use = SelectHeadsByL2(attention, n_heads, n_tokens, n_frames,
+                                   kMaxHeadsToSelect);
+  } else {
+    // Use all heads (fixed alignment heads from model export)
+    heads_to_use.resize(n_heads);
+    for (int32_t i = 0; i < n_heads; ++i) {
+      heads_to_use[i] = i;
+    }
+  }
+
+  int32_t num_selected_heads = static_cast<int32_t>(heads_to_use.size());
+
   // Process attention weights per-head, then average (like OpenAI)
   std::vector<float> processed(n_tokens * clipped_frames, 0.0f);
   std::vector<float> head_data(n_tokens * clipped_frames);
 
-  for (int32_t h = 0; h < n_heads; ++h) {
+  for (int32_t h : heads_to_use) {
     const float *src = attention + h * n_tokens * n_frames;
     for (int32_t t = 0; t < n_tokens; ++t) {
       for (int32_t f = 0; f < clipped_frames; ++f) {
@@ -64,7 +155,7 @@ TokenTimingResult WhisperDTW::ComputeTokenTimings(
     }
   }
 
-  float inv_n_heads = 1.0f / static_cast<float>(n_heads);
+  float inv_n_heads = 1.0f / static_cast<float>(num_selected_heads);
   for (int32_t i = 0; i < n_tokens * clipped_frames; ++i) {
     processed[i] *= inv_n_heads;
   }

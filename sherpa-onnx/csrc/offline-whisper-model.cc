@@ -142,6 +142,8 @@ class OfflineWhisperModel::Impl {
 
   int32_t NumAlignmentHeads() const { return n_alignment_heads_; }
 
+  bool IsDynamicHeadSelection() const { return dynamic_head_selection_; }
+
   int32_t DetectLanguage(Ort::Value &cross_k,    // NOLINT
                          Ort::Value &cross_v) {  // NOLINT
     int64_t token_val = SOT();
@@ -361,9 +363,22 @@ class OfflineWhisperModel::Impl {
         n_alignment_heads_ = 0;
       }
 
+      // Check if dynamic head selection is enabled
+      try {
+        auto dynamic_str = meta_data.LookupCustomMetadataMapAllocated(
+            "dynamic_head_selection", allocator);
+        if (dynamic_str) {
+          dynamic_head_selection_ = (std::stoi(dynamic_str.get()) != 0);
+        }
+      } catch (...) {
+        // Metadata not found, default to false (use fixed heads)
+        dynamic_head_selection_ = false;
+      }
+
       if (config_.debug) {
-        SHERPA_ONNX_LOGE("Decoder has attention output with %d alignment heads",
-                         n_alignment_heads_);
+        SHERPA_ONNX_LOGE("Decoder has attention output with %d alignment heads%s",
+                         n_alignment_heads_,
+                         dynamic_head_selection_ ? " (dynamic selection)" : "");
       }
     }
   }
@@ -415,6 +430,7 @@ class OfflineWhisperModel::Impl {
   // For cross-attention token-level timestamps
   bool has_attention_output_ = false;
   int32_t n_alignment_heads_ = 0;
+  bool dynamic_head_selection_ = false;  // Per arxiv 2509.09987
 };
 
 OfflineWhisperModel::OfflineWhisperModel(const OfflineModelConfig &config)
@@ -521,6 +537,10 @@ bool OfflineWhisperModel::HasAttentionOutput() const {
 
 int32_t OfflineWhisperModel::NumAlignmentHeads() const {
   return impl_->NumAlignmentHeads();
+}
+
+bool OfflineWhisperModel::IsDynamicHeadSelection() const {
+  return impl_->IsDynamicHeadSelection();
 }
 
 void OfflineWhisperModel::NormalizeFeatures(float *features, int32_t num_frames,
