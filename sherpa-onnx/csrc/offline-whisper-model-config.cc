@@ -56,6 +56,13 @@ void OfflineWhisperModelConfig::Register(ParseOptions *po) {
       "Does not require attention outputs. Can be combined with "
       "--whisper-enable-timestamps for both segment-level and token-level "
       "timestamps. Default: false.");
+
+  po->Register(
+      "whisper-enable-character-alignment", &enable_character_alignment,
+      "If true, use character-level tokenization for more accurate word "
+      "timestamps. This re-tokenizes the decoded text as individual characters "
+      "and runs a teacher-forced forward pass to get character-level attention "
+      "weights. Requires --whisper-enable-timestamps=true. Default: false.");
 }
 
 bool OfflineWhisperModelConfig::Validate() const {
@@ -89,6 +96,13 @@ bool OfflineWhisperModelConfig::Validate() const {
     return false;
   }
 
+  if (enable_character_alignment && !enable_timestamps) {
+    SHERPA_ONNX_LOGE(
+        "--whisper-enable-character-alignment requires "
+        "--whisper-enable-timestamps=true");
+    return false;
+  }
+
   return true;
 }
 
@@ -102,7 +116,8 @@ std::string OfflineWhisperModelConfig::ToString() const {
   os << "task=\"" << task << "\", ";
   os << "tail_paddings=" << tail_paddings << ", ";
   os << "enable_timestamps=" << (enable_timestamps ? "true" : "false") << ", ";
-  os << "enable_segment_timestamps=" << (enable_segment_timestamps ? "true" : "false") << ")";
+  os << "enable_segment_timestamps=" << (enable_segment_timestamps ? "true" : "false") << ", ";
+  os << "enable_character_alignment=" << (enable_character_alignment ? "true" : "false") << ")";
 
   return os.str();
 }

@@ -16,11 +16,12 @@ void PybindOfflineWhisperModelConfig(py::module *m) {
   py::class_<PyClass>(*m, "OfflineWhisperModelConfig")
       .def(py::init<const std::string &, const std::string &,
                     const std::string &, const std::string &, int32_t, bool,
-                    bool>(),
+                    bool, bool>(),
            py::arg("encoder"), py::arg("decoder"), py::arg("language"),
            py::arg("task"), py::arg("tail_paddings") = -1,
            py::arg("enable_timestamps") = false,
-           py::arg("enable_segment_timestamps") = false)
+           py::arg("enable_segment_timestamps") = false,
+           py::arg("enable_character_alignment") = false)
       .def_readwrite("encoder", &PyClass::encoder)
       .def_readwrite("decoder", &PyClass::decoder)
       .def_readwrite("language", &PyClass::language)
@@ -29,6 +30,8 @@ void PybindOfflineWhisperModelConfig(py::module *m) {
       .def_readwrite("enable_timestamps", &PyClass::enable_timestamps)
       .def_readwrite("enable_segment_timestamps",
                      &PyClass::enable_segment_timestamps)
+      .def_readwrite("enable_character_alignment",
+                     &PyClass::enable_character_alignment)
       .def("__str__", &PyClass::ToString);
 }
 

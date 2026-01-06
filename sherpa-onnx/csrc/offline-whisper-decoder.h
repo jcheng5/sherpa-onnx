@@ -48,6 +48,21 @@ struct OfflineWhisperDecoderResult {
   std::vector<OfflineWhisperSegment> segments;
 };
 
+// Result of teacher-forced forward pass for character-level alignment
+struct TeacherForcedResult {
+  // Cross-attention weights from all alignment heads
+  // Shape: (n_heads, n_tokens, n_audio_frames), flattened to 1D
+  std::vector<float> attention_weights;
+
+  // Dimensions of the attention tensor
+  int32_t n_heads = 0;
+  int32_t n_tokens = 0;
+  int32_t n_frames = 0;
+
+  // Number of actual audio frames (for clipping)
+  int32_t num_audio_frames = 0;
+};
+
 class OfflineWhisperDecoder {
  public:
   virtual ~OfflineWhisperDecoder() = default;

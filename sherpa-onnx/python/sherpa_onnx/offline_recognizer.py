@@ -1008,6 +1008,7 @@ class OfflineRecognizer(object):
         tail_paddings: int = -1,
         enable_timestamps: bool = False,
         enable_segment_timestamps: bool = False,
+        enable_character_alignment: bool = False,
         rule_fsts: str = "",
         rule_fars: str = "",
         hr_dict_dir: str = "",
@@ -1060,6 +1061,12 @@ class OfflineRecognizer(object):
             <|0.00|> to mark segment boundaries. Does not require attention
             outputs. Can be combined with enable_timestamps for both segment
             and token-level timestamps. Defaults to False.
+          enable_character_alignment:
+            True to use character-level tokenization for more accurate token
+            timestamps. This re-tokenizes the decoded text as individual
+            characters and runs a teacher-forced forward pass to get
+            character-level attention weights, then maps them back to subword
+            tokens. Requires enable_timestamps=True. Defaults to False.
           rule_fsts:
             If not empty, it specifies fsts for inverse text normalization.
             If there are multiple fsts, they are separated by a comma.
@@ -1077,6 +1084,7 @@ class OfflineRecognizer(object):
                 tail_paddings=tail_paddings,
                 enable_timestamps=enable_timestamps,
                 enable_segment_timestamps=enable_segment_timestamps,
+                enable_character_alignment=enable_character_alignment,
             ),
             tokens=tokens,
             num_threads=num_threads,

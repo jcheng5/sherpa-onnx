@@ -55,6 +55,30 @@ class WhisperDTW {
       int32_t num_text_tokens,
       const std::vector<int32_t> &timestamp_token_indices = {});
 
+  // Compute character-level timings from teacher-forced attention weights.
+  // This is used for character-by-character alignment following the approach
+  // from "Whisper Has an Internal Word Aligner" (arxiv 2509.09987).
+  //
+  // Unlike ComputeTokenTimings, this method:
+  // - Does not filter timestamp tokens (no timestamp tokens in teacher forcing)
+  // - Uses a simpler attention processing pipeline
+  // - Returns timings for ALL character tokens (excluding SOT sequence and EOT)
+  //
+  // @param attention Raw attention weights from teacher-forced forward pass.
+  //                  Shape: (n_heads, n_tokens, n_audio_frames)
+  // @param n_heads Number of alignment heads
+  // @param n_tokens Total number of tokens (including SOT sequence and EOT)
+  // @param n_frames Number of audio frames (full context)
+  // @param num_audio_frames Actual audio frames to use (for clipping)
+  // @param sot_sequence_length Number of special tokens at start (SOT + no_timestamps)
+  //
+  // @return TokenTimingResult with start_times and durations for each
+  //         character token (n_tokens - sot_sequence_length - 1 entries,
+  //         excluding EOT)
+  TokenTimingResult ComputeCharacterTimings(
+      const float *attention, int32_t n_heads, int32_t n_tokens,
+      int32_t n_frames, int32_t num_audio_frames, int32_t sot_sequence_length);
+
  private:
   // Apply softmax normalization across the last dimension (frames)
   void ApplySoftmax(float *data, int32_t n_tokens, int32_t n_frames);

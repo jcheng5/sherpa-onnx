@@ -9,7 +9,8 @@ Usage:
         --tokens path/to/tokens.txt \
         --audio path/to/audio.wav \
         --output timestamps.csv \
-        [--enable-segment-timestamps]
+        [--enable-segment-timestamps] \
+        [--enable-character-alignment]
 """
 
 import argparse
@@ -34,6 +35,11 @@ def main():
         help="Enable segment-level timestamps",
     )
     parser.add_argument(
+        "--enable-character-alignment",
+        action="store_true",
+        help="Use character-level alignment for more accurate timestamps",
+    )
+    parser.add_argument(
         "--language", default="en", help="Language code (default: en)"
     )
     parser.add_argument(
@@ -50,6 +56,7 @@ def main():
         task="transcribe",
         enable_timestamps=True,
         enable_segment_timestamps=args.enable_segment_timestamps,
+        enable_character_alignment=args.enable_character_alignment,
         num_threads=args.num_threads,
     )
 

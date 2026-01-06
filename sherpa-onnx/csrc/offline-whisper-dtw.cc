@@ -389,4 +389,178 @@ DTWResult WhisperDTW::RunDTW(const float *cost_matrix, int32_t n_tokens,
   return result;
 }
 
+TokenTimingResult WhisperDTW::ComputeCharacterTimings(
+    const float *attention, int32_t n_heads, int32_t n_tokens, int32_t n_frames,
+    int32_t num_audio_frames, int32_t sot_sequence_length) {
+  TokenTimingResult result;
+
+  if (n_heads <= 0 || n_tokens <= 0 || n_frames <= 0) {
+    return result;
+  }
+
+  // Number of character tokens (excluding SOT sequence and EOT)
+  int32_t num_char_tokens = n_tokens - sot_sequence_length - 1;
+  if (num_char_tokens <= 0) {
+    return result;
+  }
+
+#if DTW_DEBUG
+  fprintf(stderr, "\n========== CHARACTER DTW TIMING DEBUG ==========\n");
+  fprintf(stderr, "Input: n_heads=%d, n_tokens=%d, n_frames=%d\n",
+          n_heads, n_tokens, n_frames);
+  fprintf(stderr, "num_audio_frames=%d, sot_sequence_length=%d\n",
+          num_audio_frames, sot_sequence_length);
+  fprintf(stderr, "num_char_tokens=%d\n", num_char_tokens);
+#endif
+
+  // Clip to actual audio frames
+  int32_t clipped_frames = std::min(n_frames, num_audio_frames);
+  if (clipped_frames <= 0) {
+    clipped_frames = n_frames;
+  }
+
+  // Process attention weights following the paper's approach:
+  // Reference (timing.py get_attentions + force_align):
+  // 1. Apply median filter
+  // 2. Apply softmax across frames (dim=-1)
+  // 3. L2 normalize across tokens (dim=-2)
+  // 4. Average across heads (and layers, but we only have alignment heads)
+  //
+  // This matches the paper's implementation more closely than our original
+  // simplified version that only did L2 normalization.
+
+  std::vector<float> processed(n_tokens * clipped_frames, 0.0f);
+
+  for (int32_t h = 0; h < n_heads; ++h) {
+    const float *src = attention + h * n_tokens * n_frames;
+
+    // Copy and clip to clipped_frames
+    std::vector<float> head_data(n_tokens * clipped_frames);
+    for (int32_t t = 0; t < n_tokens; ++t) {
+      for (int32_t f = 0; f < clipped_frames; ++f) {
+        head_data[t * clipped_frames + f] = src[t * n_frames + f];
+      }
+    }
+
+    // Step 1: Apply median filter (width=7)
+    ApplyMedianFilter(head_data.data(), n_tokens, clipped_frames, 7);
+
+    // Step 2: Apply softmax across frames (dim=-1)
+    ApplySoftmax(head_data.data(), n_tokens, clipped_frames);
+
+    // Step 3: L2 normalize across tokens for each frame (dim=-2)
+    for (int32_t f = 0; f < clipped_frames; ++f) {
+      float sq_sum = 0.0f;
+      for (int32_t t = 0; t < n_tokens; ++t) {
+        float val = head_data[t * clipped_frames + f];
+        sq_sum += val * val;
+      }
+      float norm = std::sqrt(sq_sum + 1e-9f);
+      float inv_norm = 1.0f / norm;
+      for (int32_t t = 0; t < n_tokens; ++t) {
+        head_data[t * clipped_frames + f] *= inv_norm;
+      }
+    }
+
+    // Accumulate for averaging
+    for (int32_t i = 0; i < n_tokens * clipped_frames; ++i) {
+      processed[i] += head_data[i];
+    }
+  }
+
+  // Average across heads
+  float inv_n_heads = 1.0f / static_cast<float>(n_heads);
+  for (int32_t i = 0; i < n_tokens * clipped_frames; ++i) {
+    processed[i] *= inv_n_heads;
+  }
+
+  // Skip SOT sequence and exclude EOT (last token)
+  // Like paper: matrix = matrix[sot_len:-1]
+  int32_t start_token = sot_sequence_length;
+  int32_t end_token = n_tokens - 1;  // Exclude EOT
+  int32_t dtw_tokens = end_token - start_token;
+
+#if DTW_DEBUG
+  fprintf(stderr, "DTW tokens: %d (from %d to %d)\n",
+          dtw_tokens, start_token, end_token);
+#endif
+
+  if (dtw_tokens <= 0) {
+    return result;
+  }
+
+  // Build cost matrix (negate for DTW)
+  std::vector<float> cost_matrix(dtw_tokens * clipped_frames);
+  for (int32_t i = 0; i < dtw_tokens; ++i) {
+    int32_t orig_idx = start_token + i;
+    for (int32_t j = 0; j < clipped_frames; ++j) {
+      cost_matrix[i * clipped_frames + j] =
+          -processed[orig_idx * clipped_frames + j];
+    }
+  }
+
+  // Run DTW
+  DTWResult dtw_result = RunDTW(cost_matrix.data(), dtw_tokens, clipped_frames);
+
+  if (dtw_result.text_indices.empty()) {
+    return result;
+  }
+
+  // Extract jump times (where text_idx changes)
+  std::vector<int32_t> jump_frame_indices;
+  jump_frame_indices.push_back(dtw_result.time_indices[0]);
+
+  for (size_t i = 1; i < dtw_result.text_indices.size(); ++i) {
+    if (dtw_result.text_indices[i] != dtw_result.text_indices[i - 1]) {
+      jump_frame_indices.push_back(dtw_result.time_indices[i]);
+    }
+  }
+
+#if DTW_DEBUG
+  fprintf(stderr, "jump_frame_indices count: %zu\n", jump_frame_indices.size());
+  fprintf(stderr, "jump_times (first 10): ");
+  for (size_t i = 0; i < std::min(size_t(10), jump_frame_indices.size()); ++i) {
+    fprintf(stderr, "%.2f ", jump_frame_indices[i] * kWhisperSecondsPerToken);
+  }
+  fprintf(stderr, "\n");
+#endif
+
+  // Build start_times and durations for each character token
+  result.start_times.reserve(dtw_tokens);
+  result.durations.reserve(dtw_tokens);
+
+  for (int32_t i = 0; i < dtw_tokens; ++i) {
+    if (i < static_cast<int32_t>(jump_frame_indices.size())) {
+      float start = static_cast<float>(jump_frame_indices[i]) *
+                    kWhisperSecondsPerToken;
+      result.start_times.push_back(start);
+
+      if (i + 1 < static_cast<int32_t>(jump_frame_indices.size())) {
+        float end = static_cast<float>(jump_frame_indices[i + 1]) *
+                    kWhisperSecondsPerToken;
+        result.durations.push_back(end - start);
+      } else {
+        // Last token: duration to end of audio
+        float audio_end =
+            static_cast<float>(clipped_frames) * kWhisperSecondsPerToken;
+        result.durations.push_back(std::max(0.0f, audio_end - start));
+      }
+    } else {
+      // Fallback
+      float last_time =
+          result.start_times.empty() ? 0.0f : result.start_times.back();
+      result.start_times.push_back(last_time);
+      result.durations.push_back(0.0f);
+    }
+  }
+
+#if DTW_DEBUG
+  fprintf(stderr, "Result: %zu start_times, %zu durations\n",
+          result.start_times.size(), result.durations.size());
+  fprintf(stderr, "========== END CHARACTER DTW TIMING DEBUG ==========\n\n");
+#endif
+
+  return result;
+}
+
 }  // namespace sherpa_onnx

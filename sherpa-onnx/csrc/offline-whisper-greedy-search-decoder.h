@@ -24,6 +24,26 @@ class OfflineWhisperGreedySearchDecoder : public OfflineWhisperDecoder {
 
   void SetConfig(const OfflineWhisperModelConfig &config) override;
 
+  /** Run teacher-forced forward pass with given tokens.
+   *
+   * This runs a single forward pass through the decoder with ALL tokens
+   * at once (no autoregressive generation). Used for character-level
+   * alignment where we know the text in advance.
+   *
+   * @param tokens The full token sequence including SOT, no_timestamps,
+   *               text tokens (characters), and EOT
+   * @param cross_k Encoder output cross-attention keys (will be copied)
+   * @param cross_v Encoder output cross-attention values (will be copied)
+   * @param num_feature_frames Number of feature frames from the encoder
+   *
+   * @return TeacherForcedResult containing attention weights for all tokens
+   */
+  TeacherForcedResult RunTeacherForced(
+      const std::vector<int64_t>& tokens,
+      Ort::Value cross_k,
+      Ort::Value cross_v,
+      int32_t num_feature_frames);
+
  private:
   OfflineWhisperModelConfig config_;
   OfflineWhisperModel *model_;  // not owned

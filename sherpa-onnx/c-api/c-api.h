@@ -442,6 +442,12 @@ SHERPA_ONNX_API typedef struct SherpaOnnxOfflineWhisperModelConfig {
   // Does not require attention outputs. Can be combined with enable_timestamps
   // for both segment-level and token-level timestamps.
   int32_t enable_segment_timestamps;
+
+  // If non-zero, use character-level tokenization for more accurate word
+  // timestamps. This re-tokenizes the decoded text as individual characters
+  // and runs a teacher-forced forward pass to get character-level attention
+  // weights. Requires enable_timestamps to be set.
+  int32_t enable_character_alignment;
 } SherpaOnnxOfflineWhisperModelConfig;
 
 SHERPA_ONNX_API typedef struct SherpaOnnxOfflineCanaryModelConfig {

@@ -313,4 +313,86 @@ OfflineWhisperGreedySearchDecoder::Decode(Ort::Value cross_k,
   return ans;
 }
 
+TeacherForcedResult OfflineWhisperGreedySearchDecoder::RunTeacherForced(
+    const std::vector<int64_t>& tokens,
+    Ort::Value cross_k,
+    Ort::Value cross_v,
+    int32_t num_feature_frames) {
+  TeacherForcedResult result;
+
+  // Check if model supports attention output
+  if (!model_->HasAttentionOutput()) {
+    SHERPA_ONNX_LOGE(
+        "RunTeacherForced: Model does not have attention output. "
+        "Export the model with attention outputs using: "
+        "python scripts/whisper/export-onnx-with-attention.py");
+    return result;
+  }
+
+  if (tokens.empty()) {
+    return result;
+  }
+
+  auto memory_info =
+      Ort::MemoryInfo::CreateCpu(OrtDeviceAllocator, OrtMemTypeDefault);
+
+  // Create token tensor for the full sequence
+  int32_t batch_size = 1;
+  std::array<int64_t, 2> token_shape{
+      batch_size, static_cast<int64_t>(tokens.size())};
+
+  // Need a non-const copy for CreateTensor
+  std::vector<int64_t> tokens_copy = tokens;
+
+  Ort::Value tokens_tensor = Ort::Value::CreateTensor(
+      memory_info, tokens_copy.data(), tokens_copy.size(),
+      token_shape.data(), token_shape.size());
+
+  // Create offset tensor (0 for teacher forcing - start from beginning)
+  std::array<int64_t, 1> offset_shape{1};
+  Ort::Value offset = Ort::Value::CreateTensor<int64_t>(
+      model_->Allocator(), offset_shape.data(), offset_shape.size());
+  *(offset.GetTensorMutableData<int64_t>()) = 0;
+
+  // Get fresh KV cache
+  auto self_kv_cache = model_->GetInitialSelfKVCache();
+
+  // Run single forward pass with all tokens
+  auto decoder_out = model_->ForwardDecoder(
+      std::move(tokens_tensor),
+      std::move(self_kv_cache.first),
+      std::move(self_kv_cache.second),
+      std::move(cross_k),
+      std::move(cross_v),
+      std::move(offset));
+
+  // Extract attention weights from output
+  // decoder_out is 7-tuple: logits, self_k, self_v, cross_k, cross_v, offset, attention
+  auto& attn = std::get<6>(decoder_out);
+  auto attn_shape = attn.GetTensorTypeAndShapeInfo().GetShape();
+
+  // Shape should be (batch, n_heads, n_tokens, n_audio_ctx)
+  if (attn_shape.size() < 4 || attn_shape[1] == 0) {
+    SHERPA_ONNX_LOGE(
+        "RunTeacherForced: Invalid attention shape. Expected 4D tensor.");
+    return result;
+  }
+
+  result.n_heads = static_cast<int32_t>(attn_shape[1]);
+  result.n_tokens = static_cast<int32_t>(attn_shape[2]);
+  result.n_frames = static_cast<int32_t>(attn_shape[3]);
+  result.num_audio_frames = num_feature_frames / 2;  // Encoder downsamples by 2
+
+  // Copy attention weights (flatten to 1D: n_heads * n_tokens * n_frames)
+  const float* p_attn = attn.GetTensorData<float>();
+  int32_t total_size = result.n_heads * result.n_tokens * result.n_frames;
+  result.attention_weights.resize(total_size);
+
+  // The attention is already in the right order: (batch, heads, tokens, frames)
+  // We just need to skip the batch dimension
+  std::copy(p_attn, p_attn + total_size, result.attention_weights.begin());
+
+  return result;
+}
+
 }  // namespace sherpa_onnx

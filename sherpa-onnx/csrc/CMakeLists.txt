@@ -77,6 +77,7 @@ set(sources
   offline-transducer-nemo-model.cc
   offline-wenet-ctc-model-config.cc
   offline-wenet-ctc-model.cc
+  offline-whisper-char-tokenizer.cc
   offline-whisper-dtw.cc
   offline-whisper-greedy-search-decoder.cc
   offline-whisper-model-config.cc

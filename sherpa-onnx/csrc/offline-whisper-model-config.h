@@ -49,20 +49,35 @@ struct OfflineWhisperModelConfig {
   // segment-level and token-level timestamps.
   bool enable_segment_timestamps = false;
 
+  // If true, use character-level tokenization for more accurate word timestamps.
+  // This implements the approach from "Whisper Has an Internal Word Aligner"
+  // (arxiv 2509.09987):
+  // 1. Decode audio normally to get transcription
+  // 2. Re-tokenize text as individual characters
+  // 3. Run teacher-forced forward pass with character tokens
+  // 4. Apply DTW on character-level attention for timestamps
+  // 5. Map character timestamps back to original subword tokens
+  //
+  // Requires enable_timestamps=true and models with attention outputs.
+  // Results in more accurate token timestamps but requires two decoder passes.
+  bool enable_character_alignment = false;
+
   OfflineWhisperModelConfig() = default;
   OfflineWhisperModelConfig(const std::string &encoder,
                             const std::string &decoder,
                             const std::string &language,
                             const std::string &task, int32_t tail_paddings,
                             bool enable_timestamps = false,
-                            bool enable_segment_timestamps = false)
+                            bool enable_segment_timestamps = false,
+                            bool enable_character_alignment = false)
       : encoder(encoder),
         decoder(decoder),
         language(language),
         task(task),
         tail_paddings(tail_paddings),
         enable_timestamps(enable_timestamps),
-        enable_segment_timestamps(enable_segment_timestamps) {}
+        enable_segment_timestamps(enable_segment_timestamps),
+        enable_character_alignment(enable_character_alignment) {}
 
   void Register(ParseOptions *po);
   bool Validate() const;

@@ -15,6 +15,7 @@
 #include "sherpa-onnx/csrc/offline-model-config.h"
 #include "sherpa-onnx/csrc/offline-recognizer-impl.h"
 #include "sherpa-onnx/csrc/offline-recognizer.h"
+#include "sherpa-onnx/csrc/offline-whisper-char-tokenizer.h"
 #include "sherpa-onnx/csrc/offline-whisper-decoder.h"
 #include "sherpa-onnx/csrc/offline-whisper-dtw.h"
 #include "sherpa-onnx/csrc/offline-whisper-greedy-search-decoder.h"
@@ -80,6 +81,23 @@ class OfflineRecognizerWhisperImpl : public OfflineRecognizerImpl {
   OfflineRecognizerConfig GetConfig() const override { return config_; }
 
  private:
+  // Prepare mel tensor from features
+  Ort::Value PrepareMel(const std::vector<float> &f, int32_t num_frames,
+                        int32_t feat_dim, int32_t actual_frames) const {
+    std::array<int64_t, 3> shape{1, actual_frames, feat_dim};
+
+    Ort::Value mel = Ort::Value::CreateTensor<float>(
+        model_->Allocator(), shape.data(), shape.size());
+
+    float *p_mel = mel.GetTensorMutableData<float>();
+    std::copy(f.data(), f.data() + num_frames * feat_dim, p_mel);
+
+    std::fill_n(p_mel + num_frames * feat_dim,
+                (actual_frames - num_frames) * feat_dim, 0);
+
+    return Transpose12(model_->Allocator(), &mel);
+  }
+
   void DecodeStream(OfflineStream *s) const {
     decoder_->SetConfig(config_.model_config.whisper);
 
@@ -115,26 +133,22 @@ class OfflineRecognizerWhisperImpl : public OfflineRecognizerImpl {
     int32_t actual_frames =
         std::min(num_frames + tail_padding_frames, max_num_frames);
 
-    std::array<int64_t, 3> shape{1, actual_frames, feat_dim};
-
-    Ort::Value mel = Ort::Value::CreateTensor<float>(
-        model_->Allocator(), shape.data(), shape.size());
-
-    float *p_mel = mel.GetTensorMutableData<float>();
-    std::copy(f.data(), f.data() + num_frames * feat_dim, p_mel);
-
-    std::fill_n(p_mel + num_frames * feat_dim,
-                (actual_frames - num_frames) * feat_dim, 0);
-
-    mel = Transpose12(model_->Allocator(), &mel);
-
     try {
+      Ort::Value mel = PrepareMel(f, num_frames, feat_dim, actual_frames);
       auto cross_kv = model_->ForwardEncoder(std::move(mel));
 
       auto results = decoder_->Decode(std::move(cross_kv.first),
                                       std::move(cross_kv.second), num_frames);
 
       auto r = Convert(results[0], symbol_table_);
+
+      // If character alignment is enabled, compute more accurate timestamps
+      if (config_.model_config.whisper.enable_character_alignment &&
+          !r.tokens.empty()) {
+        ComputeCharacterAlignedTimestamps(f, num_frames, feat_dim,
+                                          actual_frames, results[0], r);
+      }
+
       s->SetResult(r);
     } catch (const Ort::Exception &ex) {
       SHERPA_ONNX_LOGE(
@@ -268,6 +282,135 @@ class OfflineRecognizerWhisperImpl : public OfflineRecognizerImpl {
             r.durations[i] = std::max(0.0f, segment_end - r.timestamps[i]);
           }
         }
+      }
+    }
+  }
+
+  // Compute character-aligned timestamps using the approach from
+  // "Whisper Has an Internal Word Aligner" (arxiv 2509.09987)
+  void ComputeCharacterAlignedTimestamps(
+      const std::vector<float> &f, int32_t num_frames, int32_t feat_dim,
+      int32_t actual_frames, const OfflineWhisperDecoderResult &decoder_result,
+      OfflineRecognitionResult &r) const {
+    // Get the greedy search decoder (we need access to RunTeacherForced)
+    auto *greedy_decoder = dynamic_cast<OfflineWhisperGreedySearchDecoder *>(
+        decoder_.get());
+    if (!greedy_decoder) {
+      SHERPA_ONNX_LOGE(
+          "Character alignment requires greedy search decoder");
+      return;
+    }
+
+    // Step 1: Normalize text and tokenize as characters
+    std::string text = r.text;
+    if (text.empty()) {
+      return;
+    }
+
+    // Get space token ID
+    int32_t space_token_id = -1;
+    if (symbol_table_.Contains(" ")) {
+      space_token_id = symbol_table_[" "];
+    } else {
+      SHERPA_ONNX_LOGE(
+          "Character alignment: space token not found in vocabulary");
+      return;
+    }
+
+    CharTokenizationResult char_result =
+        CharacterTokenize(text, symbol_table_, space_token_id);
+
+    if (char_result.tokens.empty()) {
+      SHERPA_ONNX_LOGE("Character alignment: no character tokens generated");
+      return;
+    }
+
+    // Step 2: Build full token sequence for teacher forcing
+    // [SOT sequence, no_timestamps, char_tokens..., EOT]
+    //
+    // Like the reference implementation (timing.py), we keep no_timestamps
+    // in the DTW matrix as a time=0 anchor. We only skip the SOT sequence
+    // (sot, lang, task), not no_timestamps.
+    std::vector<int64_t> initial_tokens = model_->GetInitialTokens();
+    int32_t sot_sequence_length = static_cast<int32_t>(initial_tokens.size());
+    initial_tokens.push_back(model_->NoTimeStampsToken());
+
+    std::vector<int64_t> full_tokens;
+    full_tokens.reserve(initial_tokens.size() + char_result.tokens.size() + 1);
+
+    for (int64_t tok : initial_tokens) {
+      full_tokens.push_back(tok);
+    }
+    for (int32_t tok : char_result.tokens) {
+      full_tokens.push_back(static_cast<int64_t>(tok));
+    }
+    full_tokens.push_back(static_cast<int64_t>(model_->EOT()));
+
+    // Step 3: Run encoder again to get fresh cross_k/cross_v
+    Ort::Value mel = PrepareMel(f, num_frames, feat_dim, actual_frames);
+    auto cross_kv = model_->ForwardEncoder(std::move(mel));
+
+    // Step 4: Run teacher-forced forward pass
+    TeacherForcedResult tf_result = greedy_decoder->RunTeacherForced(
+        full_tokens, std::move(cross_kv.first), std::move(cross_kv.second),
+        num_frames);
+
+    if (tf_result.attention_weights.empty()) {
+      SHERPA_ONNX_LOGE("Character alignment: no attention weights returned");
+      return;
+    }
+
+    // Step 5: Compute character-level timestamps using DTW
+    WhisperDTW dtw;
+    TokenTimingResult char_timings = dtw.ComputeCharacterTimings(
+        tf_result.attention_weights.data(), tf_result.n_heads,
+        tf_result.n_tokens, tf_result.n_frames, tf_result.num_audio_frames,
+        sot_sequence_length);
+
+    if (char_timings.start_times.empty()) {
+      SHERPA_ONNX_LOGE("Character alignment: DTW returned no timings");
+      return;
+    }
+
+    // Step 6: Map character timestamps back to original subword tokens
+    SubwordToCharMapping mapping = BuildSubwordToCharMapping(
+        decoder_result.tokens, char_result, symbol_table_);
+
+    // Convert character timings to subword timings
+    r.timestamps.clear();
+    r.durations.clear();
+    r.timestamps.reserve(decoder_result.tokens.size());
+    r.durations.reserve(decoder_result.tokens.size());
+
+    for (size_t i = 0; i < decoder_result.tokens.size(); ++i) {
+      int32_t char_start = mapping.char_start[i];
+      int32_t char_end = mapping.char_end[i];
+
+      if (char_start >= char_end ||
+          char_start >= static_cast<int32_t>(char_timings.start_times.size())) {
+        // No character mapping (e.g., punctuation-only token)
+        // Interpolate from neighboring tokens
+        if (!r.timestamps.empty()) {
+          float prev_end = r.timestamps.back() + r.durations.back();
+          r.timestamps.push_back(prev_end);
+          r.durations.push_back(0.0f);
+        } else {
+          r.timestamps.push_back(0.0f);
+          r.durations.push_back(0.0f);
+        }
+      } else {
+        // Get start time from first character
+        float start = char_timings.start_times[char_start];
+
+        // Get end time from last character
+        int32_t last_char = std::min(
+            char_end - 1,
+            static_cast<int32_t>(char_timings.start_times.size()) - 1);
+        float end = char_timings.start_times[last_char] +
+                    char_timings.durations[last_char];
+
+        r.timestamps.push_back(start);
+        r.durations.push_back(std::max(0.0f, end - start));
       }
     }
   }

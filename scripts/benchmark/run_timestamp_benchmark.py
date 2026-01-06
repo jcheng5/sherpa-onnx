@@ -200,6 +200,7 @@ def _init_worker(encoder: str, decoder: str, tokens: str, language: str):
         tokens=tokens,
         language=language,
         enable_timestamps=True,
+        enable_character_alignment=True,
     )
 
 
@@ -409,6 +410,7 @@ def run_benchmark(
             tokens=tokens,
             language=language,
             enable_timestamps=True,
+            enable_character_alignment=True,
         )
 
         for i, item in enumerate(manifest):

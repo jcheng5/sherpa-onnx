@@ -434,6 +434,9 @@ static sherpa_onnx::OfflineRecognizerConfig GetOfflineRecognizerConfig(
   recognizer_config.model_config.whisper.enable_segment_timestamps =
       config->model_config.whisper.enable_segment_timestamps;
 
+  recognizer_config.model_config.whisper.enable_character_alignment =
+      config->model_config.whisper.enable_character_alignment;
+
   recognizer_config.model_config.tdnn.model =
       SHERPA_ONNX_OR(config->model_config.tdnn.model, "");
 
